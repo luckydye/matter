@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lights</title>
+<style>
+  :root {
+    --bg: #f4f4f5; --card: #ffffff; --text: #18181b; --muted: #71717a;
+    --border: #e4e4e7; --accent: #f59e0b; --error: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #09090b; --card: #18181b; --text: #fafafa; --muted: #a1a1aa;
+      --border: #27272a; --accent: #fbbf24; --error: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; display: grid; gap: 12px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          padding: 14px 16px; display: grid; gap: 10px; }
+  .card.off { opacity: .6; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .row .name { flex: 1; font-weight: 600; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .error { color: var(--error); font-size: 13px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  input[type=color] { width: 40px; height: 32px; border: 1px solid var(--border);
+                      border-radius: 8px; background: none; padding: 2px; }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+           border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  button.on { background: var(--accent); border-color: var(--accent); color: #18181b; }
+  button:disabled, input:disabled { opacity: .4; cursor: default; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lights</h1>
+  <div class="card" id="all"></div>
+  <div id="lights" style="display: grid; gap: 12px"></div>
+</main>
+<script>
+// --- Data: the server's HTTP API ---------------------------------------------
+
+async function request(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    body: body && JSON.stringify(body),
+  });
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error);
+  return json;
+}
+
+const api = {
+  nodes: () => request("GET", "/nodes"),
+  light: (id) => request("GET", `/nodes/${id}`),
+  change: (id, change) => request("POST", `/nodes/${id}`, change),
+};
+
+// The page state: one entry per commissioned node, `{ id, state, error, busy }`.
+let lights = [];
+
+async function load() {
+  const nodes = await api.nodes();
+  lights = nodes.map((node) => ({ id: node.node_id, state: null, error: null, busy: true }));
+  render();
+  await Promise.all(lights.map((light) => refresh(light, () => api.light(light.id))));
+}
+
+/** Run `action` (resolving to the light's new state) and re-render with its outcome. */
+async function refresh(light, action) {
+  light.busy = true;
+  render();
+  try {
+    light.state = await action();
+    light.error = null;
+  } catch (e) {
+    light.error = e.message;
+  }
+  light.busy = false;
+  render();
+}
+
+function change(light, change) {
+  return refresh(light, () => api.change(light.id, change));
+}
+
+function changeAll(changeRequest) {
+  return Promise.all(lights.filter((light) => light.state).map((light) => change(light, changeRequest)));
+}
+
+// --- Rendering ---------------------------------------------------------------
+
+function element(tag, props = {}, children = []) {
+  const el = Object.assign(document.createElement(tag), props);
+  el.append(...children);
+  return el;
+}
+
+function controls({ on, level, color, busy, onChange }) {
+  return [
+    element("div", { className: "row" }, [
+      element("button", {
+        className: on ? "on" : "",
+        textContent: on ? "On" : "Off",
+        disabled: busy,
+        onclick: () => onChange({ on: !on }),
+      }),
+      element("input", {
+        type: "range", min: 1, max: 254, value: level ?? 254,
+        disabled: busy || level === null, title: "Brightness",
+        onchange: (e) => onChange({ level: Number(e.target.value) }),
+      }),
+      element("input", {
+        type: "color", value: "#ffffff",
+        disabled: busy || !color, title: "Color",
+        onchange: (e) => onChange({ color: e.target.value }),
+      }),
+    ]),
+  ];
+}
+
+function renderLight(light) {
+  const state = light.state;
+  return element("div", { className: "card" + (state && !state.on ? " off" : "") }, [
+    element("div", { className: "row" }, [
+      element("span", { className: "name", textContent: `Light ${light.id}` }),
+      element("span", {
+        className: "muted",
+        textContent: light.busy ? "…" : state ? `${Math.round((state.level ?? 254) / 2.54)}%` : "",
+      }),
+    ]),
+    ...(state
+      ? controls({
+          on: state.on, level: state.level, color: state.color, busy: light.busy,
+          onChange: (c) => change(light, c),
+        })
+      : []),
+    ...(light.error ? [element("div", { className: "error", textContent: light.error })] : []),
+  ]);
+}
+
+function renderAll() {
+  const reachable = lights.filter((light) => light.state);
+  return [
+    element("div", { className: "row" }, [
+      element("span", { className: "name", textContent: "All lights" }),
+      element("button", { textContent: "On", disabled: !reachable.length, onclick: () => changeAll({ on: true }) }),
+      element("button", { textContent: "Off", disabled: !reachable.length, onclick: () => changeAll({ on: false }) }),
+    ]),
+    element("div", { className: "row" }, [
+      element("input", {
+        type: "range", min: 1, max: 254, value: 254, disabled: !reachable.length, title: "Brightness",
+        onchange: (e) => changeAll({ level: Number(e.target.value) }),
+      }),
+      element("input", {
+        type: "color", value: "#ffffff", disabled: !reachable.some((light) => light.state.color), title: "Color",
+        onchange: (e) => changeAll({ color: e.target.value }),
+      }),
+    ]),
+  ];
+}
+
+function render() {
+  document.getElementById("all").replaceChildren(...renderAll());
+  document.getElementById("lights").replaceChildren(
+    ...(lights.length
+      ? lights.map(renderLight)
+      : [element("div", { className: "muted", textContent: "No commissioned lights." })])
+  );
+}
+
+load().catch((e) => {
+  document.getElementById("lights").replaceChildren(element("div", { className: "error", textContent: e.message }));
+});
+</script>
+</body>
+</html>

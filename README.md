@@ -10,6 +10,7 @@ cargo run -- [--listen 127.0.0.1:5580] [--interface en0] [--storage ./matter-sto
 
 | Route | Body | Description |
 | --- | --- | --- |
+| `GET /` | | A page to control the lights (power, brightness, color, all at once) |
 | `GET /devices` | | Discovered devices, one entry each with its `commissionable` / `operational` mDNS records and `bluetooth` advertisement |
 | `POST /commission` | `{"code": "...", "wifi": {"ssid": "...", "password": "..."}}` | Commission a device by manual pairing code or `MT:` QR payload. With `wifi`, a device not on the network is found over Bluetooth and joined to that network |
 | `GET /nodes` | | Commissioned nodes, with their operational mDNS record when online |
@@ -29,7 +30,7 @@ curl -X POST localhost:5580/commission -d '{"code": "2424-211-0896", "wifi": {"s
 # {"node_id": 1, "operational": {...}}
 ```
 
-Control it:
+Control it from http://localhost:5580, or with curl:
 
 ```sh
 curl localhost:5580/nodes/1

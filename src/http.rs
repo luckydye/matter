@@ -1,5 +1,6 @@
-//! A minimal HTTP/1.1 JSON API.
+//! A minimal HTTP/1.1 JSON API, plus a light control page.
 //!
+//! - `GET  /`          - `index.html`, a page that controls the lights through this API
 //! - `GET  /devices`   - all Matter devices currently discovered, one entry each with its mDNS records and Bluetooth advertisement
 //! - `GET  /nodes`     - nodes commissioned onto our fabric
 //! - `GET  /nodes/<id>` - the node's light: `{"on": bool, "level": 1-254, "color": bool}`
@@ -29,20 +30,36 @@ use crate::discovery::Discovery;
 
 const MAX_REQUEST_LEN: usize = 64 * 1024;
 
+const INDEX_HTML: &str = include_str!("index.html");
+
 pub struct Response {
     pub status: u16,
-    pub body: Value,
+    pub content_type: &'static str,
+    pub body: String,
 }
 
 impl Response {
     fn ok(body: Value) -> Self {
-        Self { status: 200, body }
+        Self {
+            status: 200,
+            content_type: "application/json",
+            body: body.to_string(),
+        }
+    }
+
+    fn html(body: &str) -> Self {
+        Self {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: body.to_string(),
+        }
     }
 
     fn error(status: u16, message: impl ToString) -> Self {
         Self {
             status,
-            body: json!({ "error": message.to_string() }),
+            content_type: "application/json",
+            body: json!({ "error": message.to_string() }).to_string(),
         }
     }
 }
@@ -90,15 +107,15 @@ async fn handle_connection<C: Crypto, K: KvBlobStoreAccess>(
         None => Response::error(400, "malformed HTTP request"),
     };
 
-    let body = response.body.to_string();
     let head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         response.status,
         reason(response.status),
-        body.len()
+        response.content_type,
+        response.body.len()
     );
     stream.write_all(head.as_bytes()).await?;
-    stream.write_all(body.as_bytes()).await?;
+    stream.write_all(response.body.as_bytes()).await?;
     stream.flush().await?;
 
     Ok(())
@@ -177,6 +194,7 @@ async fn route<C: Crypto, K: KvBlobStoreAccess>(
     };
 
     match (method, segments.as_slice()) {
+        ("GET", [""]) => Response::html(INDEX_HTML),
         ("GET", ["devices"]) => Response::ok(json!(devices(discovery, ble))),
         ("GET", ["nodes"]) => Response::ok(json!(controller.nodes())),
         ("GET", ["nodes", id]) => match node_id(id) {
