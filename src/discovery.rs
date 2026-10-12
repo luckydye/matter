@@ -37,6 +37,8 @@ const OPERATIONAL_SUFFIX: &str = "._matter._tcp.local";
 
 /// How often the browse queries are re-sent.
 const QUERY_INTERVAL: Duration = Duration::from_secs(30);
+/// Pause between the browse queries: some devices answer neither of two back-to-back queries.
+const QUERY_SPACING: Duration = Duration::from_millis(100);
 /// Nodes not heard from for this long are dropped from the registry.
 pub const EXPIRY_SECS: u64 = 120;
 
@@ -307,6 +309,7 @@ impl Discovery {
             let mut query = [0u8; 512];
             let len = build_browse_query(name, &mut query)?;
             self.send(socket, &query[..len]).await?;
+            Timer::after(QUERY_SPACING).await;
         }
 
         Ok(())
