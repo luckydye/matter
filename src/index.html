@@ -22,7 +22,9 @@
   h1 { font-size: 22px; margin: 0 0 4px; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
           padding: 14px 16px; display: grid; gap: 10px; }
+  .card { transition: opacity .2s; }
   .card.off { opacity: .6; }
+  .card.unreachable { opacity: .4; }
   .row { display: flex; align-items: center; gap: 12px; }
   .row .name { flex: 1; font-weight: 600; }
   .muted { color: var(--muted); font-size: 13px; }
@@ -43,13 +45,11 @@
   <div id="lights" style="display: grid; gap: 12px"></div>
 </main>
 <script>
-// --- Data: the server's HTTP API ---------------------------------------------
+// --- Data: the server's HTTP API and the page state ---------------------------
 
 async function request(method, path, body) {
-  const response = await fetch(path, {
-    method,
-    body: body && JSON.stringify(body),
-  });
+  const response = await fetch(path, { method, body: body && JSON.stringify(body) });
+  if (response.status === 204) return null;
   const json = await response.json();
   if (!response.ok) throw new Error(json.error);
   return json;
@@ -61,39 +61,73 @@ const api = {
   change: (id, change) => request("POST", `/nodes/${id}`, change),
 };
 
-// The page state: one entry per commissioned node, `{ id, state, error, busy }`.
+/** One entry per commissioned node: `{ id, state, error, inFlight, pending }`. */
 let lights = [];
+/** What the "All lights" controls last set. */
+let all = { level: 254, color: "#ffffff" };
+
+/** The light state after `change` was applied (changes are answered without the new state). */
+function applied(state, change) {
+  return {
+    ...state,
+    on: change.on ?? (change.level !== undefined ? true : state.on),
+    level: change.level ?? state.level,
+    color: change.color ?? state.color,
+  };
+}
 
 async function load() {
   const nodes = await api.nodes();
-  lights = nodes.map((node) => ({ id: node.node_id, state: null, error: null, busy: true }));
+  lights = nodes.map((node) => ({ id: node.node_id, state: null, error: null, inFlight: false, pending: null }));
   render();
-  await Promise.all(lights.map((light) => refresh(light, () => api.light(light.id))));
-}
-
-/** Run `action` (resolving to the light's new state) and re-render with its outcome. */
-async function refresh(light, action) {
-  light.busy = true;
-  render();
-  try {
-    light.state = await action();
-    light.error = null;
-  } catch (e) {
-    light.error = e.message;
-  }
-  light.busy = false;
+  await Promise.all(lights.map(async (light) => {
+    try {
+      light.state = await api.light(light.id);
+    } catch (e) {
+      light.error = e.message;
+    }
+    render();
+  }));
+  const reachable = lights.filter((light) => light.state);
+  all.level = Math.max(1, ...reachable.map((light) => light.state.level ?? 1));
   render();
 }
 
+/**
+ * Apply `change` to the page right away, then send it. While a request to this light is
+ * in flight, further changes are merged and sent once it returns, so a dragged slider
+ * never queues up more than one request per light and the last value always wins.
+ */
 function change(light, change) {
-  return refresh(light, () => api.change(light.id, change));
+  light.state = applied(light.state, change);
+  light.pending = { ...light.pending, ...change };
+  render();
+  if (!light.inFlight) send(light);
 }
 
-function changeAll(changeRequest) {
-  return Promise.all(lights.filter((light) => light.state).map((light) => change(light, changeRequest)));
+async function send(light) {
+  light.inFlight = true;
+  while (light.pending) {
+    const change = light.pending;
+    light.pending = null;
+    try {
+      await api.change(light.id, change);
+      light.error = null;
+    } catch (e) {
+      light.error = e.message;
+    }
+    render();
+  }
+  light.inFlight = false;
 }
 
-// --- Rendering ---------------------------------------------------------------
+function changeAll(c) {
+  all = { ...all, ...c };
+  lights.filter((light) => light.state).forEach((light) => change(light, c));
+  render();
+}
+
+// --- Rendering: elements are created once and updated in place -----------------
 
 function element(tag, props = {}, children = []) {
   const el = Object.assign(document.createElement(tag), props);
@@ -101,77 +135,90 @@ function element(tag, props = {}, children = []) {
   return el;
 }
 
-function controls({ on, level, color, busy, onChange }) {
-  return [
-    element("div", { className: "row" }, [
-      element("button", {
-        className: on ? "on" : "",
-        textContent: on ? "On" : "Off",
-        disabled: busy,
-        onclick: () => onChange({ on: !on }),
-      }),
-      element("input", {
-        type: "range", min: 1, max: 254, value: level ?? 254,
-        disabled: busy || level === null, title: "Brightness",
-        onchange: (e) => onChange({ level: Number(e.target.value) }),
-      }),
-      element("input", {
-        type: "color", value: "#ffffff",
-        disabled: busy || !color, title: "Color",
-        onchange: (e) => onChange({ color: e.target.value }),
-      }),
-    ]),
-  ];
+/** Set an input's value, unless the user is interacting with it. */
+function setValue(input, value) {
+  if (document.activeElement !== input) input.value = value;
 }
 
-function renderLight(light) {
-  const state = light.state;
-  return element("div", { className: "card" + (state && !state.on ? " off" : "") }, [
+function createControls(onChange) {
+  const power = element("button", { onclick: () => onChange({ on: !power.classList.contains("on") }) });
+  const level = element("input", {
+    type: "range", min: 1, max: 254, title: "Brightness",
+    oninput: () => onChange({ level: Number(level.value) }),
+  });
+  const color = element("input", {
+    type: "color", title: "Color",
+    oninput: () => onChange({ color: color.value }),
+  });
+  return { power, level, color };
+}
+
+function createLightView(light) {
+  const controls = createControls((c) => change(light, c));
+  const percent = element("span", { className: "muted" });
+  const error = element("div", { className: "error" });
+  const root = element("div", { className: "card" }, [
     element("div", { className: "row" }, [
       element("span", { className: "name", textContent: `Light ${light.id}` }),
-      element("span", {
-        className: "muted",
-        textContent: light.busy ? "…" : state ? `${Math.round((state.level ?? 254) / 2.54)}%` : "",
-      }),
+      percent,
     ]),
-    ...(state
-      ? controls({
-          on: state.on, level: state.level, color: state.color, busy: light.busy,
-          onChange: (c) => change(light, c),
-        })
-      : []),
-    ...(light.error ? [element("div", { className: "error", textContent: light.error })] : []),
+    element("div", { className: "row" }, [controls.power, controls.level, controls.color]),
+    error,
   ]);
+  return { root, percent, error, ...controls };
 }
 
-function renderAll() {
-  const reachable = lights.filter((light) => light.state);
-  return [
-    element("div", { className: "row" }, [
-      element("span", { className: "name", textContent: "All lights" }),
-      element("button", { textContent: "On", disabled: !reachable.length, onclick: () => changeAll({ on: true }) }),
-      element("button", { textContent: "Off", disabled: !reachable.length, onclick: () => changeAll({ on: false }) }),
-    ]),
-    element("div", { className: "row" }, [
-      element("input", {
-        type: "range", min: 1, max: 254, value: 254, disabled: !reachable.length, title: "Brightness",
-        onchange: (e) => changeAll({ level: Number(e.target.value) }),
-      }),
-      element("input", {
-        type: "color", value: "#ffffff", disabled: !reachable.some((light) => light.state.color), title: "Color",
-        onchange: (e) => changeAll({ color: e.target.value }),
-      }),
-    ]),
-  ];
+function updateLightView(view, light) {
+  const state = light.state;
+  view.root.className = "card" + (!state ? " unreachable" : state.on ? "" : " off");
+  view.percent.textContent = state?.level ? `${Math.round(state.level / 2.54)}%` : "";
+  view.error.textContent = light.error ?? "";
+  view.error.hidden = !light.error;
+
+  view.power.textContent = state?.on ? "On" : "Off";
+  view.power.classList.toggle("on", !!state?.on);
+  view.power.disabled = !state;
+  setValue(view.level, state?.level ?? 254);
+  view.level.disabled = !state || state.level === null;
+  setValue(view.color, state?.color ?? "#ffffff");
+  view.color.disabled = !state || state.color === null;
 }
+
+function createAllView() {
+  const controls = createControls(changeAll);
+  const on = element("button", { textContent: "On", onclick: () => changeAll({ on: true }) });
+  const off = element("button", { textContent: "Off", onclick: () => changeAll({ on: false }) });
+  document.getElementById("all").append(
+    element("div", { className: "row" }, [element("span", { className: "name", textContent: "All lights" }), on, off]),
+    element("div", { className: "row" }, [controls.level, controls.color]),
+  );
+  return { on, off, ...controls };
+}
+
+function updateAllView(view) {
+  const reachable = lights.filter((light) => light.state);
+  view.on.disabled = view.off.disabled = view.level.disabled = !reachable.length;
+  view.color.disabled = !reachable.some((light) => light.state.color !== null);
+  setValue(view.level, all.level);
+  setValue(view.color, all.color);
+}
+
+const allView = createAllView();
+const lightViews = new Map();
 
 function render() {
-  document.getElementById("all").replaceChildren(...renderAll());
-  document.getElementById("lights").replaceChildren(
-    ...(lights.length
-      ? lights.map(renderLight)
-      : [element("div", { className: "muted", textContent: "No commissioned lights." })])
-  );
+  const container = document.getElementById("lights");
+  if (lightViews.size !== lights.length || lights.some((light) => !lightViews.has(light.id))) {
+    lightViews.clear();
+    lights.forEach((light) => lightViews.set(light.id, createLightView(light)));
+    container.replaceChildren(
+      ...(lights.length
+        ? [...lightViews.values()].map((view) => view.root)
+        : [element("div", { className: "muted", textContent: "No commissioned lights." })])
+    );
+  }
+  lights.forEach((light) => updateLightView(lightViews.get(light.id), light));
+  updateAllView(allView);
 }
 
 load().catch((e) => {

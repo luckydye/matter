@@ -1,8 +1,10 @@
 //! The controller fabric and commissioning of discovered devices onto it.
 
 use core::cell::RefCell;
+
 use core::num::NonZeroU8;
 use core::pin::pin;
+use std::collections::BTreeMap;
 
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -35,6 +37,7 @@ use rs_matter::transport::network::Address;
 use rs_matter::Matter;
 
 use crate::ble;
+use crate::control::Light;
 use crate::discovery::{DiscoveredNode, Discovery};
 
 const FABRIC_ID: u64 = 1;
@@ -165,6 +168,8 @@ pub struct Controller<'a, C: Crypto, K> {
     pub kv: K,
     pub fab_idx: NonZeroU8,
     pub nodes: RefCell<Vec<u64>>,
+    /// The light endpoint of each node, looked up on first use.
+    pub lights: RefCell<BTreeMap<u64, Light>>,
     /// Serializes commissioning: one device at a time.
     pub commissioner: Mutex<NoopRawMutex, Commissioner<'a, 'a, C>>,
 }
@@ -205,6 +210,7 @@ impl<'a, C: Crypto, K: KvBlobStoreAccess> Controller<'a, C, K> {
             kv,
             fab_idx,
             nodes: RefCell::new(nodes),
+            lights: RefCell::new(BTreeMap::new()),
             commissioner: Mutex::new(Commissioner::new(
                 matter,
                 crypto,

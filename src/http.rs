@@ -3,9 +3,10 @@
 //! - `GET  /`          - `index.html`, a page that controls the lights through this API
 //! - `GET  /devices`   - all Matter devices currently discovered, one entry each with its mDNS records and Bluetooth advertisement
 //! - `GET  /nodes`     - nodes commissioned onto our fabric
-//! - `GET  /nodes/<id>` - the node's light: `{"on": bool, "level": 1-254, "color": bool}`
-//! - `POST /nodes/<id>` with `{"on": bool, "level": 1-254, "color": "#rrggbb"}` (all fields optional)
-//! - `POST /nodes/<id>/toggle`
+//! - `GET  /nodes/<id>` - the node's light: `{"on": bool, "level": 1-254, "color": "#rrggbb"}`
+//! - `POST /nodes/<id>` with `{"on": bool, "level": 1-254, "color": "#rrggbb", "transition": seconds}`
+//!   (all fields optional), answered with `204` once applied
+//! - `POST /nodes/<id>/toggle`, answered with `204`
 //! - `POST /commission` with `{"code": "<manual pairing code or MT:... QR payload>"}`,
 //!   plus `"wifi": {"ssid": "...", "password": "..."}` to also search Bluetooth
 
@@ -23,7 +24,7 @@ use rs_matter::error::{Error, ErrorCode};
 use rs_matter::persist::KvBlobStoreAccess;
 
 use crate::ble::BleScanner;
-use crate::control::{hue_saturation, LightChange, LightState};
+use crate::control::{rgb, LightChange, LightState};
 use crate::controller::{parse_code, Controller, WiFi};
 use crate::devices::devices;
 use crate::discovery::Discovery;
@@ -44,6 +45,14 @@ impl Response {
             status: 200,
             content_type: "application/json",
             body: body.to_string(),
+        }
+    }
+
+    fn no_content() -> Self {
+        Self {
+            status: 204,
+            content_type: "application/json",
+            body: String::new(),
         }
     }
 
@@ -198,7 +207,7 @@ async fn route<C: Crypto, K: KvBlobStoreAccess>(
         ("GET", ["devices"]) => Response::ok(json!(devices(discovery, ble))),
         ("GET", ["nodes"]) => Response::ok(json!(controller.nodes())),
         ("GET", ["nodes", id]) => match node_id(id) {
-            Some(id) => light_response(controller.light_state(id).await),
+            Some(id) => light_response(controller.light_state(id).await.map(Some)),
             None => Response::error(404, "no such node"),
         },
         ("POST", ["nodes", id]) => {
@@ -218,14 +227,17 @@ async fn route<C: Crypto, K: KvBlobStoreAccess>(
             if change
                 .color
                 .as_deref()
-                .is_some_and(|color| hue_saturation(color).is_none())
+                .is_some_and(|color| rgb(color).is_none())
             {
                 return Response::error(400, "color must be #rrggbb");
             }
-            light_response(controller.change_light(id, &change).await)
+            if change.transition_time().is_none() {
+                return Response::error(400, "transition must be 0-6553.5 seconds");
+            }
+            light_response(controller.change_light(id, &change).await.map(|()| None))
         }
         ("POST", ["nodes", id, "toggle"]) => match node_id(id) {
-            Some(id) => light_response(controller.toggle_light(id).await),
+            Some(id) => light_response(controller.toggle_light(id).await.map(|()| None)),
             None => Response::error(404, "no such node"),
         },
         ("POST", ["commission"]) => {
@@ -257,9 +269,11 @@ async fn route<C: Crypto, K: KvBlobStoreAccess>(
     }
 }
 
-fn light_response(result: Result<LightState, Error>) -> Response {
+/// `200` with the light's state, or `204` for a change (`None`).
+fn light_response(result: Result<Option<LightState>, Error>) -> Response {
     match result {
-        Ok(state) => Response::ok(json!(state)),
+        Ok(Some(state)) => Response::ok(json!(state)),
+        Ok(None) => Response::no_content(),
         Err(e) if e.is_peer_unresponsive() => Response::error(504, "node did not respond"),
         Err(e) if e.code() == ErrorCode::NotFound => Response::error(
             404,
@@ -275,6 +289,7 @@ fn light_response(result: Result<LightState, Error>) -> Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        204 => "No Content",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
