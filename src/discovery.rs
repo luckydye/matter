@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use async_io::Async;
 use domain::base::Name;
-use embassy_futures::select::{select4, Either4};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Ticker, Timer};
@@ -217,20 +217,28 @@ impl Discovery {
     }
 
     pub async fn run(&self, matter: &Matter<'_>) -> Result<(), Error> {
+        // Unsolicited announcements arrive on port 5353. Queries go out from their own port instead:
+        // responders answer those directly (RFC 6762 §6.7), which arrives reliably, while their multicast
+        // answers often get lost on the way between Wi-Fi bands.
         let socket = self.bind()?;
+        let query_socket = self.bind_query()?;
         let mut ticker = Ticker::every(QUERY_INTERVAL);
         let mut buf = [0u8; 9000];
+        let mut query_buf = [0u8; 9000];
 
         info!(
             "mDNS discovery running on {} (index {})",
             self.interface.name, self.interface.index
         );
 
-        self.browse(&socket).await?;
+        self.browse(&query_socket).await?;
 
         loop {
             match select4(
-                socket.recv_from(&mut buf),
+                select(
+                    socket.recv_from(&mut buf),
+                    query_socket.recv_from(&mut query_buf),
+                ),
                 ticker.next(),
                 matter.transport().wait_mdns_resolve_request(),
                 self.browse_now.wait(),
@@ -238,12 +246,15 @@ impl Discovery {
             .await
             {
                 Either4::First(received) => {
-                    let (len, _) = received?;
-                    self.handle_response(&socket, matter, &buf[..len]).await?;
+                    let data = match received {
+                        Either::First(received) => &buf[..received?.0],
+                        Either::Second(received) => &query_buf[..received?.0],
+                    };
+                    self.handle_response(&query_socket, matter, data).await?;
                 }
                 Either4::Second(()) => {
                     self.expire();
-                    self.browse(&socket).await?;
+                    self.browse(&query_socket).await?;
                 }
                 Either4::Third(service) => {
                     let mut instance = heapless::String::<128>::new();
@@ -261,9 +272,9 @@ impl Discovery {
                         Name::<Vec<u8>>::from_str(&instance).map_err(|_| ErrorCode::InvalidData)?;
                     let mut query = [0u8; 512];
                     let len = build_resolve_query(name, &mut query)?;
-                    self.send(&socket, &query[..len]).await?;
+                    self.send(&query_socket, &query[..len]).await?;
                 }
-                Either4::Fourth(()) => self.browse(&socket).await?,
+                Either4::Fourth(()) => self.browse(&query_socket).await?,
             }
         }
     }
@@ -277,6 +288,15 @@ impl Discovery {
         socket.set_multicast_if_v6(self.interface.index)?;
         socket.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), MDNS_PORT).into())?;
         socket.join_multicast_v6(&MDNS_IPV6_BROADCAST_ADDR, self.interface.index)?;
+
+        Ok(Async::new(UdpSocket::from(socket))?)
+    }
+
+    fn bind_query(&self) -> Result<Async<UdpSocket>, Error> {
+        let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_only_v6(true)?;
+        socket.set_multicast_if_v6(self.interface.index)?;
+        socket.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0).into())?;
 
         Ok(Async::new(UdpSocket::from(socket))?)
     }
