@@ -1,0 +1,32 @@
+[package]
+name = "matter-server"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Pinned to a `main` commit: the commissioner (`rs_matter::onboard`) is not in a crates.io release yet.
+rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "7ecc7476b0bc9c817dd873d6baeb222d8b7abf1b", features = ["async-io"] }
+domain = { version = "0.12", default-features = false, features = ["std"] }
+heapless = "0.9"
+async-io = "2"
+async-executor = "1"
+futures-lite = "2"
+embassy-futures = "0.1"
+embassy-sync = "0.8"
+embassy-time = { version = "0.5", features = ["std"] }
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
+static_cell = "2"
+socket2 = { version = "0.6", features = ["all"] }
+if-addrs = { version = "0.15", features = ["link-local"] }
+rand = { version = "0.10", features = ["std", "std_rng", "thread_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+bluest = "0.6.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# objc2-foundation 0.3.2 (via bluest) declares `-[NSUUID getUUIDBytes:]` with an argument
+# encoding that current macOS does not report, and objc2's debug-build message check aborts on it.
+objc2 = { version = "0.6", features = ["disable-encoding-assertions"] }
