@@ -1,7 +1,7 @@
-//! Remote control of commissioned lights: the OnOff and LevelControl clusters, invoked over CASE.
+//! Remote control of commissioned lights: the OnOff, LevelControl and ColorControl clusters, invoked over CASE.
 
 use rs_matter::crypto::Crypto;
-use rs_matter::dm::clusters::decl::color_control;
+use rs_matter::dm::clusters::decl::color_control::{self, ColorControlClient};
 use rs_matter::dm::clusters::decl::descriptor::DescriptorAttrReads;
 use rs_matter::dm::clusters::decl::level_control::{self, LevelControlClient, OptionsBitmap};
 use rs_matter::dm::clusters::decl::on_off::{self, OnOffClient};
@@ -44,6 +44,37 @@ pub struct LightChange {
     pub on: Option<bool>,
     /// Brightness, 1-254. Setting it also turns the light on, unless `on` is `false`.
     pub level: Option<u8>,
+    /// Color as `#rrggbb`; only its hue and saturation are used, brightness is `level`.
+    pub color: Option<String>,
+}
+
+/// Matter's hue (0-254 for 0-360°) and saturation (0-254) of a `#rrggbb` color.
+pub fn hue_saturation(color: &str) -> Option<(u8, u8)> {
+    let hex = color.strip_prefix('#').filter(|hex| hex.len() == 6)?;
+    let channel = |i: usize| {
+        u8::from_str_radix(&hex[i..i + 2], 16)
+            .ok()
+            .map(|c| c as f32 / 255.0)
+    };
+    let (r, g, b) = (channel(0)?, channel(2)?, channel(4)?);
+
+    let max = r.max(g).max(b);
+    let delta = max - r.min(g).min(b);
+    let degrees = if delta == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / delta).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let saturation = if max == 0.0 { 0.0 } else { delta / max };
+
+    Some((
+        (degrees / 360.0 * 254.0).round() as u8,
+        (saturation * 254.0).round() as u8,
+    ))
 }
 
 impl<'a, C: Crypto, K: KvBlobStoreAccess> Controller<'a, C, K> {
@@ -179,6 +210,27 @@ impl<'a, C: Crypto, K: KvBlobStoreAccess> Controller<'a, C, K> {
                     .await?
             }
             None => {}
+        }
+
+        if let Some(color) = &change.color {
+            let (hue, saturation) = hue_saturation(color).ok_or(ErrorCode::InvalidArgument)?;
+            if !light.color {
+                return Err(ErrorCode::InvalidCommand.into());
+            }
+            // Applied even while the light is off, so it comes on in that color.
+            let if_off = color_control::OptionsBitmap::EXECUTE_IF_OFF;
+            self.exchange(node_id)
+                .await?
+                .color_control()
+                .move_to_hue_and_saturation(light.endpoint, |req| {
+                    req.hue(hue)?
+                        .saturation(saturation)?
+                        .transition_time(0)?
+                        .options_mask(if_off)?
+                        .options_override(if_off)?
+                        .end()
+                })
+                .await?;
         }
 
         self.read_light(node_id, light).await

@@ -10,8 +10,8 @@ cargo run -- [--listen 127.0.0.1:5580] [--interface en0] [--storage ./matter-sto
 | --- | --- |
 | `GET /devices` | Discovered devices, one entry each with its `commissionable` (`_matterc._udp`) and `operational` (`_matter._tcp`) mDNS records and its `bluetooth` advertisement |
 | `GET /nodes` | Nodes commissioned onto our fabric, with their operational mDNS record if they're online |
-| `GET /nodes/<id>` | The node's light: `{"endpoint": 1, "on": true, "level": 254}` (`level` is brightness 1-254, `null` if not dimmable) |
-| `POST /nodes/<id>` `{"on": true, "level": 127}` | Switch the light and/or set its brightness (either field optional; setting `level` also turns it on) |
+| `GET /nodes/<id>` | The node's light: `{"endpoint": 1, "on": true, "level": 254, "color": true}` (`level` is brightness 1-254, `null` if not dimmable; `color` tells whether it supports color) |
+| `POST /nodes/<id>` `{"on": true, "level": 127, "color": "#ff0000"}` | Switch the light, set its brightness and/or color (all fields optional; setting `level` also turns it on; `color` sets hue and saturation, brightness stays `level`) |
 | `POST /nodes/<id>/toggle` | Toggle the light |
 | `POST /commission` `{"code": "3497-0112-332"}` | Commission the discovered device matching a manual pairing code or an `MT:` QR payload |
 | `POST /commission` `{"code": "...", "wifi": {"ssid": "...", "password": "..."}}` | Same, but if no device on the network matches, scan Bluetooth for it and put it on this Wi-Fi network |

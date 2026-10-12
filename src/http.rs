@@ -2,8 +2,8 @@
 //!
 //! - `GET  /devices`   - all Matter devices currently discovered, one entry each with its mDNS records and Bluetooth advertisement
 //! - `GET  /nodes`     - nodes commissioned onto our fabric
-//! - `GET  /nodes/<id>` - the node's light: `{"on": bool, "level": 1-254}`
-//! - `POST /nodes/<id>` with `{"on": bool, "level": 1-254}` (either field optional)
+//! - `GET  /nodes/<id>` - the node's light: `{"on": bool, "level": 1-254, "color": bool}`
+//! - `POST /nodes/<id>` with `{"on": bool, "level": 1-254, "color": "#rrggbb"}` (all fields optional)
 //! - `POST /nodes/<id>/toggle`
 //! - `POST /commission` with `{"code": "<manual pairing code or MT:... QR payload>"}`,
 //!   plus `"wifi": {"ssid": "...", "password": "..."}` to also search Bluetooth
@@ -22,7 +22,7 @@ use rs_matter::error::{Error, ErrorCode};
 use rs_matter::persist::KvBlobStoreAccess;
 
 use crate::ble::BleScanner;
-use crate::control::{LightChange, LightState};
+use crate::control::{hue_saturation, LightChange, LightState};
 use crate::controller::{parse_code, Controller, WiFi};
 use crate::devices::devices;
 use crate::discovery::Discovery;
@@ -197,6 +197,13 @@ async fn route<C: Crypto, K: KvBlobStoreAccess>(
             {
                 return Response::error(400, "level must be 1-254");
             }
+            if change
+                .color
+                .as_deref()
+                .is_some_and(|color| hue_saturation(color).is_none())
+            {
+                return Response::error(400, "color must be #rrggbb");
+            }
             light_response(controller.change_light(id, &change).await)
         }
         ("POST", ["nodes", id, "toggle"]) => match node_id(id) {
@@ -241,7 +248,7 @@ fn light_response(result: Result<LightState, Error>) -> Response {
             "node not found on the network, or it has no light (OnOff) endpoint",
         ),
         Err(e) if e.code() == ErrorCode::InvalidCommand => {
-            Response::error(400, "light cannot be dimmed")
+            Response::error(400, "light does not support this change (dimming or color)")
         }
         Err(e) => Response::error(500, format!("light control failed: {:?}", e.code())),
     }
