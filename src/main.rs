@@ -70,6 +70,14 @@ fn main() -> Result<(), Error> {
         env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
     );
 
+    // bluest's Linux backend (bluer) needs a Tokio runtime; its worker threads drive bluer's tasks.
+    #[cfg(target_os = "linux")]
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    #[cfg(target_os = "linux")]
+    let _tokio = tokio.enter();
+
     futures_lite::future::block_on(run(parse_args()))
 }
 

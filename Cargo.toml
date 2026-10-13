@@ -26,6 +26,10 @@ log = "0.4"
 env_logger = "0.11"
 bluest = "0.6.9"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# bluest's Linux backend (bluer) spawns its D-Bus tasks onto the ambient Tokio runtime.
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # objc2-foundation 0.3.2 (via bluest) declares `-[NSUUID getUUIDBytes:]` with an argument
 # encoding that current macOS does not report, and objc2's debug-build message check aborts on it.

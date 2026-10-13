@@ -79,9 +79,11 @@ impl BleScanner {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        let adapter = Adapter::default()
-            .await
-            .ok_or(ErrorCode::NoNetworkInterface)?;
+        let Some(adapter) = Adapter::default().await else {
+            // Devices already on the network are still found over mDNS.
+            info!("No Bluetooth adapter, not scanning");
+            return core::future::pending().await;
+        };
         let services = [Uuid::from_u128(MATTER_BLE_SERVICE_UUID)];
 
         loop {

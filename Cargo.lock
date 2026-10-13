@@ -1419,6 +1419,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "static_cell",
+ "tokio",
 ]
 
 [[package]]
